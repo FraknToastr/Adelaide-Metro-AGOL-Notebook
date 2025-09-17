@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Adelaide Metro Live Tracker - Direct GTFS</title>
+    <link rel="stylesheet" href="https://js.arcgis.com/4.28/esri/themes/light/main.css">
+    <script src="https://js.arcgis.com/4.28/"></script>
+    <style>
+        #viewDiv { height: 90vh; width: 100%; }
+        #controls {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            z-index: 100;
+        }
+        #refreshBtn {
+            background: #0079c1;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-bottom: 10px;
+            display: block;
+            width: 100%;
+        }
+        #refreshBtn:hover { background: #005a8c; }
+        #refreshBtn:disabled { 
+            background: #ccc; 
+            cursor: not-allowed; 
+        }
+        .status { 
+            font-size: 12px; 
+            color: #666; 
+            margin: 5px 0;
+        }
+        .loading { color: #0079c1; }
+        .error { color: #d93025; }
+        .success { color: #137333; }
+    </style>
+</head>
+<body>
+    <div id="viewDiv"></div>
+    <div id="controls">
+        <button id="refreshBtn">🔄 Update Vehicle Data</button>
+        <div id="status" class="status">Ready to fetch data</div>
+        <div id="lastUpdate" class="status">Last updated: Never</div>
+        <div id="vehicleCount" class="status">Vehicles: 0</div>
+    </div>
+
+    <script>
+        require([
+            "esri/Map",
+            "esri/views/MapView",
+            "esri/layers/GraphicsLayer",
+            "esri/Graphic",
+            "esri/symbols/SimpleMarkerSymbol",
+            "esri/geometry/Point"
+        ], function(Map, MapView, GraphicsLayer, Graphic, SimpleMarkerSymbol, Point) {
+            
+            // Create graphics layer for vehicles
+            const vehicleLayer = new GraphicsLayer({
+                title: "Adelaide Metro Vehicles"
+            });
+
+            const map = new Map({
+                basemap: "streets-navigation-vector",
+                layers: [vehicleLayer]
+            });
+
+            const view = new MapView({
+                container: "viewDiv",
+                map: map,
+                center: [138.6, -34.9], // Adelaide center
+                zoom: 11
+            });
+
+            // Vehicle type symbols
+            const symbols = {
+                'Bus': new SimpleMarkerSymbol({
+                    color: [255, 69, 0], // Red-orange
+                    size: 8,
+                    style: "circle",
+                    outline: { color: [255, 255, 255], width: 1 }
+                }),
+                'Train': new SimpleMarkerSymbol({
+                    color: [0, 123, 255], // Blue
+                    size: 10,
+                    style: "square",
+                    outline: { color: [255, 255, 255], width: 1 }
+                }),
+                'Tram': new SimpleMarkerSymbol({
+                    color: [40, 167, 69], // Green
+                    size: 9,
+                    style: "diamond",
+                    outline: { color: [255, 255, 255], width: 1 }
+                }),
+                'Unknown': new SimpleMarkerSymbol({
+                    color: [128, 128, 128], // Gray
+                    size: 6,
+                    style: "circle",
+                    outline: { color: [255, 255, 255], width: 1 }
+                })
+            };
+
+            function classifyVehicleType(routeId) {
+                if (!routeId) return "Unknown";
+                
+                const route = routeId.toString().toUpperCase().trim();
+                
+                // Tram routes
+                if (route === "GLNELG" || route === "BTANIC") {
+                    return "Tram";
+                }
+                
+                // Check if purely alphabetic (train)
+                if (/^[A-Z]+$/.test(route)) {
+                    return "Train";
+                }
+                
+                // Everything else is bus
+                return "Bus";
+            }
+
+            async function fetchAdelaideMetroData() {
+                const statusEl = document.getElementById('status');
+                const refreshBtn = document.getElementById('refreshBtn');
+                const lastUpdateEl = document.getElementById('lastUpdate');
+                const vehicleCountEl = document.getElementById('vehicleCount');
+
+                try {
+                    statusEl.textContent = "Fetching vehicle data...";
+                    statusEl.className = "status loading";
+                    refreshBtn.disabled = true;
+
+                    // Note: Direct GTFS-RT fetching from browser may be blocked by CORS
+                    // This would need to go through a proxy service or your existing feature layer
+                    
+                    // Alternative: Fetch from your ArcGIS feature layer instead
+                    const featureLayerUrl = "https://services.arcgis.com/BzylpWnjWP0tW4nL/arcgis/rest/services/Adelaide_Metro_Vehicles_20250818_132407/FeatureServer";
+                    const queryParams = new URLSearchParams({
+                        where: "1=1",
+                        outFields: "*",
+                        returnGeometry: "true",
+                        f: "json"
+                    });
+
+                    const response = await fetch(`${featureLayerUrl}?${queryParams}`);
+                    const data = await response.json();
+
+                    if (data.features) {
+                        updateMapWithVehicles(data.features);
+                        statusEl.textContent = "Data updated successfully";
+                        statusEl.className = "status success";
+                        lastUpdateEl.textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+                        vehicleCountEl.textContent = `Vehicles: ${data.features.length}`;
+                    } else {
+                        throw new Error("No vehicle data received");
+                    }
+
+                } catch (error) {
+                    console.error("Error fetching data:", error);
+                    statusEl.textContent = `Error: ${error.message}`;
+                    statusEl.className = "status error";
+                } finally {
+                    refreshBtn.disabled = false;
+                }
+            }
+
+            function updateMapWithVehicles(features) {
+                // Clear existing graphics
+                vehicleLayer.removeAll();
+
+                // Add new vehicle graphics
+                const graphics = features.map(feature => {
+                    const attrs = feature.attributes;
+                    const vehicleType = classifyVehicleType(attrs.RouteID);
+                    
+                    return new Graphic({
+                        geometry: new Point({
+                            longitude: feature.geometry.x,
+                            latitude: feature.geometry.y,
+                            spatialReference: { wkid: 4326 }
+                        }),
+                        symbol: symbols[vehicleType] || symbols['Unknown'],
+                        attributes: attrs,
+                        popupTemplate: {
+                            title: "{VehicleType}: {RouteID}",
+                            content: `
+                                <b>Vehicle ID:</b> {VehicleID}<br>
+                                <b>Route:</b> {RouteID}<br>
+                                <b>Direction:</b> {DirectionID}<br>
+                                <b>Vehicle Label:</b> {VehicleLabel}<br>
+                                <b>Current Stop:</b> {CurrentStopID}<br>
+                                <b>Speed:</b> {Speed} m/s<br>
+                                <b>Bearing:</b> {Bearing}°<br>
+                                <b>Last Updated:</b> {LastUpdated}
+                            `
+                        }
+                    });
+                });
+
+                vehicleLayer.addMany(graphics);
+            }
+
+            // Event listener for refresh button
+            document.getElementById('refreshBtn').addEventListener('click', fetchAdelaideMetroData);
+
+            // Auto-refresh every 2 minutes
+            setInterval(fetchAdelaideMetroData, 120000);
+
+            // Initial load
+            fetchAdelaideMetroData();
+        });
+    </script>
+</body>
+</html>
